@@ -1,0 +1,18 @@
+SeveritiesToInclude:
+  CRITICAL: true #true
+  HIGH: true #true
+  MEDIUM: true #true
+  LOW: true #true
+  INFORMATIONAL: true #false
+SeverityWeight:
+  CRITICAL: 90 #90
+  HIGH: 70 #70
+  MEDIUM: 40 #40
+  LOW: 1 #1
+  INFORMATIONAL: 0 #0
+StandardsToInclude:
+  'AWS Foundational Security Best Practices v1.0.0': false #true
+  'CIS AWS Foundations Benchmark v1.2.0': true #true
+  'CIS AWS Foundations Benchmark v1.4.0': false #true
+  'NIST Special Publication 800-53 Revision 5': false #true
+  'PCI DSS v3.2.1': false #true
