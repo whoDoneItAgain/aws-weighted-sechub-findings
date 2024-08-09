@@ -11,8 +11,8 @@ SeverityWeight:
   LOW: 1 #1
   INFORMATIONAL: 0 #0
 StandardsToInclude:
-  'AWS Foundational Security Best Practices v1.0.0': false #true
+  'AWS Foundational Security Best Practices v1.0.0': true #true
   'CIS AWS Foundations Benchmark v1.2.0': true #true
-  'CIS AWS Foundations Benchmark v1.4.0': false #true
-  'NIST Special Publication 800-53 Revision 5': false #true
-  'PCI DSS v3.2.1': false #true
+  'CIS AWS Foundations Benchmark v1.4.0': true #true
+  'NIST Special Publication 800-53 Revision 5': true #true
+  'PCI DSS v3.2.1': true #true

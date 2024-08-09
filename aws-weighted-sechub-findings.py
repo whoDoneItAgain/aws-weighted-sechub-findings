@@ -161,8 +161,7 @@ def configure_settings(config_file):
     return included_standards, included_severities, severity_weights
 
 
-def get_disabled_controls(standard_arn: str) -> list[str]:
-
+def get_enabled_controls(standard_arn: str) -> dict[str, str]:
     # Get Standard Subscription Arn
     enabled_standards_response = SH_CLIENT.get_enabled_standards()
     enabled_standards_list: list = enabled_standards_response["StandardsSubscriptions"]
@@ -176,26 +175,36 @@ def get_disabled_controls(standard_arn: str) -> list[str]:
             standard_subscription_arn = es["StandardsSubscriptionArn"]
             break
 
-    # Get Disabled Controls
+    # Get Controls
     standard_controls_response = SH_CLIENT.describe_standards_controls(
-        StandardsSubscriptionArn=standard_subscription_arn
+        StandardsSubscriptionArn=standard_subscription_arn, MaxResults=100
     )
-    standard_controls_list: list = standard_controls_response["Controls"]
-    while "NextToken" in standard_controls_response:
-        SH_CLIENT.describe_standards_controls(
-            NextToken=standard_controls_response["NextToken"]
-        )
+    standard_controls_list = standard_controls_response["Controls"]
+    LOGGER.debug(f"Standard Controls Count: {len(standard_controls_list)}")
+    LOGGER.debug(f"Standard Controls Count: {standard_controls_list}")
 
-    disabled_controls: list = []
+    LOGGER.debug(standard_controls_response)
+
+    while "NextToken" in standard_controls_response:
+        standard_controls_response = SH_CLIENT.describe_standards_controls(
+            StandardsSubscriptionArn=standard_subscription_arn,
+            MaxResults=100,
+            NextToken=standard_controls_response["NextToken"],
+        )
+        standard_controls_list.extend(standard_controls_response["Controls"])
+        LOGGER.debug(f"Standard Controls Count: {len(standard_controls_list)}")
+
+    enabled_controls: dict[str, str] = {}
     for sc in standard_controls_list:
-        if sc["ControlStatus"] == "DISABLED":
+        if sc["ControlStatus"] == "ENABLED":
             control_arn: str = sc["StandardsControlArn"]
             control_tail: str = control_arn.split(":control/")[1]
-            disabled_controls.append(control_tail)
+            enabled_controls[control_tail] = sc["SeverityRating"]
 
-    LOGGER.info(f"Disabled Controls: {disabled_controls}")
+    LOGGER.info(f"Enabled Controls Count: {len(enabled_controls)}")
+    LOGGER.debug(f"Enabled Controls: {enabled_controls}")
 
-    return disabled_controls
+    return enabled_controls
 
 
 def get_findings(
@@ -203,10 +212,12 @@ def get_findings(
     severities: list[str],
     start_date: datetime,
     end_date: datetime,
-    disabled_controls: list[str],
+    enabled_controls: dict[str, str],
     severity_weights: dict[str, int],
-):
-    st = time.time()
+    start_time,
+) -> dict:
+
+    get_findings_response: dict = {}
     findings_results: dict = {}
 
     # Build Get Findings Filter - Severity
@@ -234,78 +245,132 @@ def get_findings(
     # Build Get Findings Filter - End
 
     # Get Findings
-    findings_results = SH_CLIENT.get_findings(
+    get_findings_response = SH_CLIENT.get_findings(
         Filters=get_findings_filter, MaxResults=100
     )
-    sechub_findings = findings_results["Findings"]
+    sechub_findings = get_findings_response["Findings"]
 
-    elapsed_time = time.strftime("%H:%M:%S", time.gmtime(time.time() - st))
+    elapsed_time = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
 
     LOGGER.info(f"Findings Found: {len(sechub_findings)}. Elapsed Time: {elapsed_time}")
 
-    while "NextToken" in findings_results:
-        findings_results = SH_CLIENT.get_findings(
+    while "NextToken" in get_findings_response:  # and len(sechub_findings) < 5:
+        get_findings_response = SH_CLIENT.get_findings(
             Filters=get_findings_filter,
             MaxResults=100,
-            NextToken=findings_results["NextToken"],
+            NextToken=get_findings_response["NextToken"],
         )
-        sechub_findings.extend(findings_results["Findings"])
-        elapsed_time = time.strftime("%H:%M:%S", time.gmtime(time.time() - st))
+        sechub_findings.extend(get_findings_response["Findings"])
+        elapsed_time = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
         LOGGER.info(
             f"Findings Found: {len(sechub_findings)}. Elapsed Time: {elapsed_time}"
         )
 
-    total_findings = len(sechub_findings)
-    findings_results["total_findings"] = total_findings
-    LOGGER.info(f"Total Findings: {total_findings}")
+    all_findings = len(sechub_findings)
+    findings_results["all_findings"] = all_findings
+    LOGGER.info(f"All Findings: {all_findings}")
 
-    # Remove Disabled Controls
+    # Remove Disabled Controls Findings
     enabled_sechub_findings: list = []
     for sf in sechub_findings:
         finding_standard_control_arn = sf["ProductFields"]["StandardsControlArn"]
-        if not (finding_standard_control_arn.endswith(tuple(disabled_controls))):
+        if finding_standard_control_arn.endswith(tuple(enabled_controls)):
             enabled_sechub_findings.append(sf)
 
-    findings_results["enabled_findings"] = len(enabled_sechub_findings)
-    LOGGER.info(f"Enabled Findings: {len(enabled_sechub_findings)}")
-
-    # Calculate Findings my Control
-    findings_by_control: dict[str, int] = {}
-    for ef in enabled_sechub_findings:
-        security_control_id = ef["Compliance"]["SecurityControlId"]
-        if security_control_id in findings_by_control:
-            findings_by_control[security_control_id] += 1
-        else:
-            findings_by_control[security_control_id] = 1
-
-    # Calculate Findings my Severity
+    # Get Findings By Severity
     findings_by_severity: dict[str, int] = {}
-    findings_by_severity_original: dict[str, int] = {}
-    for i, j in itertools.product(enabled_sechub_findings, severities):
-        if i["Severity"]["Label"] == j:
-            if j in findings_by_severity:
-                findings_by_severity[j] += 1
-            else:
-                findings_by_severity[j] = 1
-        if i["Severity"]["Original"] == j:
-            if j in findings_by_severity_original:
-                findings_by_severity_original[j] += 1
-            else:
-                findings_by_severity_original[j] = 1
+    findings_by_severity_passed: dict[str, int] = {}
+    findings_by_severity_failed: dict[str, int] = {}
 
-    LOGGER.debug(findings_by_severity)
-    LOGGER.debug(findings_by_severity_original)
+    for i, j in itertools.product(enabled_sechub_findings, enabled_controls.items()):
+        if (i["ProductFields"]["StandardsControlArn"]).endswith(j[0]):
+            if j[1] in findings_by_severity:
+                findings_by_severity[j[1]] += 1
+            else:
+                findings_by_severity[j[1]] = 1
+
+            if i["Compliance"]["Status"] == "PASSED":
+                if j[1] in findings_by_severity_passed:
+                    findings_by_severity_passed[j[1]] += 1
+                else:
+                    findings_by_severity_passed[j[1]] = 1
+            if i["Compliance"]["Status"] == "FAILED":
+                if j[1] in findings_by_severity_failed:
+                    findings_by_severity_failed[j[1]] += 1
+                else:
+                    findings_by_severity_failed[j[1]] = 1
+
+    findings_results["findings_by_severity"] = findings_by_severity
+    findings_results["findings_by_severity_passed"] = findings_by_severity_passed
+    findings_results["findings_by_severity_failed"] = findings_by_severity_failed
+
+    LOGGER.debug(f"Findings By Severity: {findings_by_severity}")
+    LOGGER.debug(f"Findings By Severity (Passed): {findings_by_severity_passed}")
+    LOGGER.debug(f"Findings By Severity (Failed): {findings_by_severity_failed}")
+
+    # Determine Weighted Scores
 
     findings_by_severity_weighted: dict[str, int] = {}
-    for k, v in findings_by_severity.items():
+    findings_by_severity_passed_weighted: dict[str, int] = {}
+    findings_by_severity_failed_weighted: dict[str, int] = {}
+    for k in findings_by_severity.keys():
         findings_by_severity_weighted[k] = findings_by_severity[k] * severity_weights[k]
+    for k in findings_by_severity_passed.keys():
+        findings_by_severity_passed_weighted[k] = (
+            findings_by_severity_passed[k] * severity_weights[k]
+        )
+    for k in findings_by_severity_failed.keys():
+        findings_by_severity_failed_weighted[k] = (
+            findings_by_severity_failed[k] * severity_weights[k]
+        )
+    LOGGER.debug(f"Weighted Findings By Severity: {findings_by_severity_weighted}")
+    LOGGER.debug(
+        f"Weighted Findings By Severity (Passed): {findings_by_severity_passed_weighted}"
+    )
+    LOGGER.debug(
+        f"Weighted Findings By Severity (Failed): {findings_by_severity_failed_weighted}"
+    )
 
-    LOGGER.debug(findings_by_severity_weighted)
+    total_findings = sum(findings_by_severity.values())
+    passed_findings = sum(findings_by_severity_passed.values())
+    failed_findings = sum(findings_by_severity_failed.values())
+
+    findings_results["total_findings"] = total_findings
+    findings_results["passed_findings"] = passed_findings
+    findings_results["failed_findings"] = failed_findings
+
+    LOGGER.debug(f"Total Findings: {total_findings}")
+    LOGGER.debug(f"Total Findings (Passed): {passed_findings}")
+    LOGGER.debug(f"Total Findings (Failed): {failed_findings}")
+
+    total_findings_weighted = sum(findings_by_severity_weighted.values())
+    passed_findings_weighted = sum(findings_by_severity_passed_weighted.values())
+    failed_findings_weighted = sum(findings_by_severity_failed_weighted.values())
+
+    findings_results["total_findings_weighted"] = total_findings_weighted
+    findings_results["passed_findings_weighted"] = passed_findings_weighted
+    findings_results["failed_findings_weighted"] = failed_findings_weighted
+
+    LOGGER.debug(f"Weighted Total Findings: {total_findings_weighted}")
+    LOGGER.debug(f"Weighted Total Findings (Passed): {passed_findings_weighted}")
+    LOGGER.debug(f"Weighted Total Findings (Failed): {failed_findings_weighted}")
+
+    sechub_score = round(passed_findings / total_findings * 100)
+    sechub_score_weighted = int(
+        round(passed_findings_weighted / total_findings_weighted * 100)
+    )
+
+    findings_results["sechub_score"] = sechub_score
+    findings_results["sechub_score_weighted"] = sechub_score_weighted
+
+    LOGGER.info(f"Security Score: {sechub_score}%")
+    LOGGER.info(f"Weighted Security Score: {sechub_score_weighted}%")
 
     return findings_results
 
 
 def main():
+
     assert sys.version_info >= (3, 12)
 
     config_args = get_config_args()
@@ -313,7 +378,8 @@ def main():
     configure_logging(
         debug_logging=config_args.debug_logging, info_logging=config_args.info_logging
     )
-
+    st = time.time()
+    LOGGER.info(f"Function Start Time: {st}")
     LOGGER.debug(f"Configuration Arguments - {config_args}")
 
     configure_boto3_client(
@@ -327,28 +393,38 @@ def main():
 
     export_file = Path(config_args.export_file).absolute()
 
-    LOGGER.info(f"Included Standards: {included_standards}")
-    LOGGER.info(f"Included Severities: {included_severities}")
-    LOGGER.info(f"Included Weights: {severity_weights}")
+    LOGGER.debug(f"Included Standards: {included_standards}")
+    LOGGER.debug(f"Included Severities: {included_severities}")
+    LOGGER.debug(f"Included Weights: {severity_weights}")
 
     end_date = datetime.now() + timedelta(days=1)
     start_date = datetime.now() - timedelta(days=1)
 
-    LOGGER.info(f"Start Date: {start_date}")
-    LOGGER.info(f"End Date: {end_date}")
+    LOGGER.debug(f"Start Date: {start_date}")
+    LOGGER.debug(f"End Date: {end_date}")
 
+    sechub_scores: dict[str, dict] = {}
     for ic in included_standards:
-        disabled_controls = get_disabled_controls(
-            standard_arn=STANDARDS_ARN_MAPPINGS[ic]
-        )
+        LOGGER.debug(ic)
+        LOGGER.debug(STANDARDS_ARN_MAPPINGS[ic])
+        enabled_controls = get_enabled_controls(standard_arn=STANDARDS_ARN_MAPPINGS[ic])
+
         results = get_findings(
             standard=CONTROL_NAME_MAPPINGS[ic],
             severities=included_severities,
             start_date=start_date,
             end_date=end_date,
-            disabled_controls=disabled_controls,
+            enabled_controls=enabled_controls,
             severity_weights=severity_weights,
+            start_time=st,
         )
+
+        sechub_scores[ic] = results
+
+    LOGGER.info(sechub_scores)
+
+    elapsed_time = time.strftime("%H:%M:%S", time.gmtime(time.time() - st))
+    LOGGER.info(f"Function Elapsed Time: {elapsed_time}")
 
 
 if __name__ == "__main__":
