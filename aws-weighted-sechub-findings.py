@@ -1,7 +1,7 @@
 import argparse
 import configparser
+import csv
 import itertools
-import json
 import logging
 import os
 import sys
@@ -59,7 +59,7 @@ def get_config_args():
         "--export-file",
         action="store",
         type=str,
-        default="./outputs/weighted-findings.json",
+        default="./outputs/sechub-findings.csv",
         help="Path to Export File",
     )
     parser.add_argument(
@@ -73,13 +73,28 @@ def get_config_args():
         help="Enables Info Level Logging. Superseded by debug-logging",
     )
 
+    parser.add_argument(
+        "--log-to-file",
+        action="store_true",
+        help="Enables Logging to File",
+    )
+
     args = parser.parse_args()
 
     return args
 
 
-def configure_logging(debug_logging: bool = False, info_logging: bool = False):
+def configure_logging(
+    debug_logging: bool = False,
+    info_logging: bool = False,
+    log_to_file: bool = False,
+    timestamp=datetime.now().strftime("%Y-%m-%dT%H-%M-%SZ"),
+):
     ch = logging.StreamHandler()
+    if log_to_file:
+        log_filename = "logs/output.log"
+        os.makedirs(os.path.dirname(log_filename), exist_ok=True)
+        fh = logging.FileHandler(f"logs/awsf_{timestamp}.log")
     ch.setLevel(logging.DEBUG)
 
     if debug_logging:
@@ -92,11 +107,15 @@ def configure_logging(debug_logging: bool = False, info_logging: bool = False):
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
     ch.setFormatter(log_formatter)
+    if log_to_file:
+        fh.setFormatter(log_formatter)
 
     # make sure all other log handlers are removed before adding it back
     for handler in LOGGER.handlers:
         LOGGER.removeHandler(handler)
     LOGGER.addHandler(ch)
+    if log_to_file:
+        LOGGER.addHandler(fh)
 
 
 def configure_boto3_client(config_file, profile):
@@ -252,7 +271,9 @@ def get_findings(
 
     elapsed_time = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
 
-    LOGGER.info(f"Findings Found: {len(sechub_findings)}. Elapsed Time: {elapsed_time}")
+    LOGGER.info(
+        f"Standard: {standard} - Findings Found: {len(sechub_findings)} - Elapsed Time: {elapsed_time}"
+    )
 
     while "NextToken" in get_findings_response:  # and len(sechub_findings) < 5:
         get_findings_response = SH_CLIENT.get_findings(
@@ -263,7 +284,7 @@ def get_findings(
         sechub_findings.extend(get_findings_response["Findings"])
         elapsed_time = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
         LOGGER.info(
-            f"Findings Found: {len(sechub_findings)}. Elapsed Time: {elapsed_time}"
+            f"Standard: {standard} - Findings Found: {len(sechub_findings)} - Elapsed Time: {elapsed_time}"
         )
 
     all_findings = len(sechub_findings)
@@ -281,9 +302,16 @@ def get_findings(
     findings_by_severity: dict[str, int] = {}
     findings_by_severity_passed: dict[str, int] = {}
     findings_by_severity_failed: dict[str, int] = {}
+    findings_by_control_by_severity: dict[str, dict] = {}
+    findings_by_control_by_severity_passed: dict[str, dict[str, int]] = {}
+    findings_by_control_by_severity_failed: dict[str, dict[str, int]] = {}
 
     for i, j in itertools.product(enabled_sechub_findings, enabled_controls.items()):
-        if (i["ProductFields"]["StandardsControlArn"]).endswith(j[0]):
+        if i["Workflow"]["Status"] == "SUPPRESSED":
+            pass
+
+        elif (i["ProductFields"]["StandardsControlArn"]).endswith(j[0]):
+            # By Finding
             if j[1] in findings_by_severity:
                 findings_by_severity[j[1]] += 1
             else:
@@ -294,11 +322,103 @@ def get_findings(
                     findings_by_severity_passed[j[1]] += 1
                 else:
                     findings_by_severity_passed[j[1]] = 1
-            if i["Compliance"]["Status"] == "FAILED":
+
+            elif i["Workflow"]["Status"] == "SUPPRESSED":
+                if j[1] in findings_by_severity_passed:
+                    findings_by_severity_passed[j[1]] += 1
+                else:
+                    findings_by_severity_passed[j[1]] = 1
+
+            elif i["Compliance"]["Status"] == "FAILED":
                 if j[1] in findings_by_severity_failed:
                     findings_by_severity_failed[j[1]] += 1
                 else:
                     findings_by_severity_failed[j[1]] = 1
+
+            # By Control
+            findings_by_control_by_severity_entry: dict[str, int] = {}
+            if j[1] in findings_by_control_by_severity:
+                if (
+                    i["Compliance"]["SecurityControlId"]
+                    in findings_by_control_by_severity[j[1]]
+                ):
+                    findings_by_control_by_severity[j[1]][
+                        i["Compliance"]["SecurityControlId"]
+                    ] += 1
+                else:
+                    findings_by_control_by_severity[j[1]][
+                        i["Compliance"]["SecurityControlId"]
+                    ] = 1
+            else:
+                findings_by_control_by_severity_entry[
+                    i["Compliance"]["SecurityControlId"]
+                ] = 1
+                findings_by_control_by_severity[j[1]] = (
+                    findings_by_control_by_severity_entry
+                )
+
+            if i["Compliance"]["Status"] == "PASSED":
+                if j[1] in findings_by_control_by_severity_passed:
+                    if (
+                        i["Compliance"]["SecurityControlId"]
+                        in findings_by_control_by_severity_passed[j[1]]
+                    ):
+                        findings_by_control_by_severity_passed[j[1]][
+                            i["Compliance"]["SecurityControlId"]
+                        ] += 1
+                    else:
+                        findings_by_control_by_severity_passed[j[1]][
+                            i["Compliance"]["SecurityControlId"]
+                        ] = 1
+                else:
+                    findings_by_control_by_severity_entry[
+                        i["Compliance"]["SecurityControlId"]
+                    ] = 1
+                    findings_by_control_by_severity_passed[j[1]] = (
+                        findings_by_control_by_severity_entry
+                    )
+
+            elif i["Workflow"]["Status"] == "SUPPRESSED":
+                if j[1] in findings_by_control_by_severity_passed:
+                    if (
+                        i["Compliance"]["SecurityControlId"]
+                        in findings_by_control_by_severity_passed[j[1]]
+                    ):
+                        findings_by_control_by_severity_passed[j[1]][
+                            i["Compliance"]["SecurityControlId"]
+                        ] += 1
+                    else:
+                        findings_by_control_by_severity_passed[j[1]][
+                            i["Compliance"]["SecurityControlId"]
+                        ] = 1
+                else:
+                    findings_by_control_by_severity_entry[
+                        i["Compliance"]["SecurityControlId"]
+                    ] = 1
+                    findings_by_control_by_severity_passed[j[1]] = (
+                        findings_by_control_by_severity_entry
+                    )
+
+            elif i["Compliance"]["Status"] == "FAILED":
+                if j[1] in findings_by_control_by_severity_failed:
+                    if (
+                        i["Compliance"]["SecurityControlId"]
+                        in findings_by_control_by_severity_failed[j[1]]
+                    ):
+                        findings_by_control_by_severity_failed[j[1]][
+                            i["Compliance"]["SecurityControlId"]
+                        ] += 1
+                    else:
+                        findings_by_control_by_severity_failed[j[1]][
+                            i["Compliance"]["SecurityControlId"]
+                        ] = 1
+                else:
+                    findings_by_control_by_severity_entry[
+                        i["Compliance"]["SecurityControlId"]
+                    ] = 1
+                    findings_by_control_by_severity_failed[j[1]] = (
+                        findings_by_control_by_severity_entry
+                    )
 
     findings_results["findings_by_severity"] = findings_by_severity
     findings_results["findings_by_severity_passed"] = findings_by_severity_passed
@@ -308,8 +428,25 @@ def get_findings(
     LOGGER.debug(f"Findings By Severity (Passed): {findings_by_severity_passed}")
     LOGGER.debug(f"Findings By Severity (Failed): {findings_by_severity_failed}")
 
-    # Determine Weighted Scores
+    findings_results["findings_by_control_by_severity"] = (
+        findings_by_control_by_severity
+    )
+    findings_results["findings_by_control_by_severity_passed"] = (
+        findings_by_control_by_severity_passed
+    )
+    findings_results["findings_by_control_by_severity_failed"] = (
+        findings_by_control_by_severity_failed
+    )
 
+    LOGGER.debug(f"Findings By Control By Severity: {findings_by_control_by_severity}")
+    LOGGER.debug(
+        f"Findings By Control By Severity (Passed): {findings_by_control_by_severity_passed}"
+    )
+    LOGGER.debug(
+        f"Findings By Control By Severity (Failed): {findings_by_control_by_severity_failed}"
+    )
+
+    # Determine Weighted Scores by Finding
     findings_by_severity_weighted: dict[str, int] = {}
     findings_by_severity_passed_weighted: dict[str, int] = {}
     findings_by_severity_failed_weighted: dict[str, int] = {}
@@ -355,16 +492,94 @@ def get_findings(
     LOGGER.debug(f"Weighted Total Findings (Passed): {passed_findings_weighted}")
     LOGGER.debug(f"Weighted Total Findings (Failed): {failed_findings_weighted}")
 
-    sechub_score = round(passed_findings / total_findings * 100)
-    sechub_score_weighted = int(
+    sechub_score_by_findings = round(passed_findings / total_findings * 100)
+    sechub_score_by_findings_weighted = int(
         round(passed_findings_weighted / total_findings_weighted * 100)
     )
 
-    findings_results["sechub_score"] = sechub_score
-    findings_results["sechub_score_weighted"] = sechub_score_weighted
+    findings_results["sechub_score_by_findings"] = sechub_score_by_findings
+    findings_results["sechub_score_by_findings_weighted"] = (
+        sechub_score_by_findings_weighted
+    )
 
-    LOGGER.info(f"Security Score: {sechub_score}%")
-    LOGGER.info(f"Weighted Security Score: {sechub_score_weighted}%")
+    LOGGER.info(f"Security Score By Findings: {sechub_score_by_findings}%")
+    LOGGER.info(
+        f"Weighted Security Score By Findings: {sechub_score_by_findings_weighted}%"
+    )
+
+    # By Control
+    total_controls: int = 0
+    total_controls_weighted: int = 0
+    passed_controls: int = 0
+    passed_controls_weighted: int = 0
+    failed_controls: int = 0
+    failed_controls_weighted: int = 0
+
+    for i in findings_by_control_by_severity:
+        total_controls += len(findings_by_control_by_severity[i])
+        total_controls_weighted += (
+            len(findings_by_control_by_severity[i]) * severity_weights[i]
+        )
+
+    failed_controls_to_remove: list[str] = []
+    for i in findings_by_control_by_severity:
+        for j in findings_by_control_by_severity[i]:
+            if i in findings_by_control_by_severity_failed:
+                if j in findings_by_control_by_severity_failed[i]:
+                    if i in findings_by_control_by_severity_failed:
+                        if j in findings_by_control_by_severity_passed[i]:
+                            findings_by_control_by_severity_failed[i][
+                                j
+                            ] += findings_by_control_by_severity_passed[i][j]
+                        failed_controls_to_remove.append(j)
+
+    for i in failed_controls_to_remove:
+        for j in findings_by_control_by_severity_passed:
+            if i in findings_by_control_by_severity_passed[j]:
+                findings_by_control_by_severity_passed[j].pop(i)
+
+    for i in findings_by_control_by_severity_passed:
+        passed_controls += len(findings_by_control_by_severity_passed[i])
+        passed_controls_weighted += (
+            len(findings_by_control_by_severity_passed[i]) * severity_weights[i]
+        )
+
+    for i in findings_by_control_by_severity_failed:
+        failed_controls += len(findings_by_control_by_severity_failed[i])
+        failed_controls_weighted += (
+            len(findings_by_control_by_severity_failed[i]) * severity_weights[i]
+        )
+
+    findings_results["total_controls"] = total_controls
+    findings_results["passed_controls"] = passed_controls
+    findings_results["failed_controls"] = failed_controls
+
+    LOGGER.debug(f"Total Controls: {total_controls}")
+    LOGGER.debug(f"Total Controls (Passed): {passed_controls}")
+    LOGGER.debug(f"Total Controls (Failed): {failed_controls}")
+
+    findings_results["total_controls_weighted"] = total_controls_weighted
+    findings_results["passed_controls_weighted"] = passed_controls_weighted
+    findings_results["failed_controls_weighted"] = failed_controls_weighted
+
+    LOGGER.debug(f"Weighted Total Controls: {total_controls_weighted}")
+    LOGGER.debug(f"Weighted Total Controls (Passed): {passed_controls_weighted}")
+    LOGGER.debug(f"Weighted Total Controls (Failed): {failed_controls_weighted}")
+
+    sechub_score_by_controls = round(passed_controls / total_controls * 100)
+    sechub_score_by_controls_weighted = int(
+        round(passed_controls_weighted / total_controls_weighted * 100)
+    )
+
+    findings_results["sechub_score_by_controls"] = sechub_score_by_controls
+    findings_results["sechub_score_by_controls_weighted"] = (
+        sechub_score_by_controls_weighted
+    )
+
+    LOGGER.info(f"Security Score By Controls: {sechub_score_by_controls}%")
+    LOGGER.info(
+        f"Weighted Security Score By Controls: {sechub_score_by_controls_weighted}%"
+    )
 
     return findings_results
 
@@ -375,10 +590,16 @@ def main():
 
     config_args = get_config_args()
 
+    timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%SZ")
+
     configure_logging(
-        debug_logging=config_args.debug_logging, info_logging=config_args.info_logging
+        debug_logging=config_args.debug_logging,
+        info_logging=config_args.info_logging,
+        log_to_file=config_args.log_to_file,
+        timestamp=timestamp,
     )
     st = time.time()
+
     LOGGER.info(f"Function Start Time: {st}")
     LOGGER.debug(f"Configuration Arguments - {config_args}")
 
@@ -386,12 +607,18 @@ def main():
         profile=config_args.profile,
         config_file=Path(os.path.expanduser(config_args.aws_config_file)).absolute(),
     )
+    included_standards: list[str] = []
+    included_severities: list[str] = []
+    severity_weights: dict[str, int] = {}
 
     included_standards, included_severities, severity_weights = configure_settings(
         config_file=Path(config_args.config_file).absolute()
     )
 
     export_file = Path(config_args.export_file).absolute()
+    export_file_timestamp = export_file.with_name(
+        f"{export_file.stem}-{timestamp}{export_file.suffix}"
+    )
 
     LOGGER.debug(f"Included Standards: {included_standards}")
     LOGGER.debug(f"Included Severities: {included_severities}")
@@ -409,7 +636,7 @@ def main():
         LOGGER.debug(STANDARDS_ARN_MAPPINGS[ic])
         enabled_controls = get_enabled_controls(standard_arn=STANDARDS_ARN_MAPPINGS[ic])
 
-        results = get_findings(
+        results: dict[str, int] = get_findings(
             standard=CONTROL_NAME_MAPPINGS[ic],
             severities=included_severities,
             start_date=start_date,
@@ -422,6 +649,94 @@ def main():
         sechub_scores[ic] = results
 
     LOGGER.info(sechub_scores)
+
+    (export_file_timestamp.parent).mkdir(parents=True, exist_ok=True)
+
+    with open(export_file_timestamp, "w", newline="") as ef:
+        writer = csv.writer(ef)
+        csv_header: list[str] = [
+            "Standard",
+            "Total Controls",
+            "Passed Controls",
+            "Controls Score",
+            "Weighted Controls Score",
+            "Failed 'CRITICAL' Controls",
+            "Failed 'HIGH' Controls",
+            "Failed 'MEDIUM' Controls",
+            "Failed 'LOW' Controls",
+            "Total Findings",
+            "Passed Findings",
+            "Findings Score",
+            "Weighted Findings Score",
+            "Failed 'CRITICAL' Findings",
+            "Failed 'HIGH' Findings",
+            "Failed 'MEDIUM' Findings",
+            "Failed 'LOW' Findings",
+        ]
+
+        writer.writerow(csv_header)
+
+        for s in sechub_scores.keys():
+            csv_row: list = []
+            csv_row.append(s)
+            csv_row.append(sechub_scores[s]["total_controls"])
+            csv_row.append(sechub_scores[s]["passed_controls"])
+            csv_row.append(f'{sechub_scores[s]["sechub_score_by_controls"]}%')
+            csv_row.append(f'{sechub_scores[s]["sechub_score_by_controls_weighted"]}%')
+            csv_row.append(
+                len(
+                    sechub_scores[s]["findings_by_control_by_severity_failed"][
+                        "CRITICAL"
+                    ]
+                )
+                if "CRITICAL"
+                in sechub_scores[s]["findings_by_control_by_severity_failed"]
+                else "0"
+            )
+            csv_row.append(
+                len(sechub_scores[s]["findings_by_control_by_severity_failed"]["HIGH"])
+                if "HIGH" in sechub_scores[s]["findings_by_control_by_severity_failed"]
+                else "0"
+            )
+            csv_row.append(
+                len(
+                    sechub_scores[s]["findings_by_control_by_severity_failed"]["MEDIUM"]
+                )
+                if "MEDIUM"
+                in sechub_scores[s]["findings_by_control_by_severity_failed"]
+                else "0"
+            )
+            csv_row.append(
+                len(sechub_scores[s]["findings_by_control_by_severity_failed"]["LOW"])
+                if "LOW" in sechub_scores[s]["findings_by_control_by_severity_failed"]
+                else "0"
+            )
+            csv_row.append(sechub_scores[s]["total_findings"])
+            csv_row.append(sechub_scores[s]["passed_findings"])
+            csv_row.append(f'{sechub_scores[s]["sechub_score_by_findings"]}%')
+            csv_row.append(f'{sechub_scores[s]["sechub_score_by_findings_weighted"]}%')
+            csv_row.append(
+                sechub_scores[s]["findings_by_severity_failed"]["CRITICAL"]
+                if "CRITICAL" in sechub_scores[s]["findings_by_severity_failed"]
+                else "0"
+            )
+            csv_row.append(
+                sechub_scores[s]["findings_by_severity_failed"]["HIGH"]
+                if "HIGH" in sechub_scores[s]["findings_by_severity_failed"]
+                else "0"
+            )
+            csv_row.append(
+                sechub_scores[s]["findings_by_severity_failed"]["MEDIUM"]
+                if "MEDIUM" in sechub_scores[s]["findings_by_severity_failed"]
+                else "0"
+            )
+            csv_row.append(
+                sechub_scores[s]["findings_by_severity_failed"]["LOW"]
+                if "LOW" in sechub_scores[s]["findings_by_severity_failed"]
+                else "0"
+            )
+
+            writer.writerow(csv_row)
 
     elapsed_time = time.strftime("%H:%M:%S", time.gmtime(time.time() - st))
     LOGGER.info(f"Function Elapsed Time: {elapsed_time}")

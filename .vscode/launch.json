@@ -10,7 +10,7 @@
       "request": "launch",
       "program": "aws-weighted-sechub-findings.py",
       "console": "integratedTerminal",
-      "args": "--debug-logging"
+      "args": "--debug-logging --log-to-file"
     },
     {
       "name": "Run App with info logging",
@@ -18,7 +18,7 @@
       "request": "launch",
       "program": "aws-weighted-sechub-findings.py",
       "console": "integratedTerminal",
-      "args": "--info-logging"
+      "args": "--info-logging --log-to-file"
     }
   ]
 }
