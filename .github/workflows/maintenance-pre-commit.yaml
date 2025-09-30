@@ -1,0 +1,41 @@
+name: Maintenance - Pre-Commit
+on:
+  schedule:
+    - cron: '0 0 * * 0'
+  workflow_dispatch: # Enables on-demand/manual triggering: https://docs.github.com/en/free-pro-team@latest/actions/managing-workflow-runs/manually-running-a-workflow
+
+jobs:
+  pre-commit-maintenance:
+    permissions:
+      contents: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5.0.0
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.13'
+
+      - id: pre-commit-updates
+        run: |
+          pip install pre-commit
+          precommitoutput=$(pre-commit autoupdate)
+          precommitupdates=$(echo "$precommitoutput" | grep updating || true)
+          echo "precommit_updates<<EOF" >> $GITHUB_OUTPUT
+          echo "$precommitupdates" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - id: create-pull-request
+        uses: peter-evans/create-pull-request@v7.0.8
+        with:
+          commit-message: |
+            Update Precommit Hook Versions
+          body: |
+            ${{ steps.pre-commit-updates.outputs.precommit_updates }}
+
+            Automated changes by [create-pull-request](https://github.com/peter-evans/create-pull-request) GitHub action
+          delete-branch: true
+          branch: create-pull-request/maintenance-precommit
+          title: maintenance(precommit) - Update Precommit Hook Versions
+          labels: dependencies
