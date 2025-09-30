@@ -119,7 +119,6 @@ def configure_logging(
 
 
 def configure_boto3_client(config_file, profile):
-
     aws_config = configparser.RawConfigParser()
     aws_config.read(config_file)
 
@@ -235,7 +234,6 @@ def get_findings(
     severity_weights: dict[str, int],
     start_time,
 ) -> dict:
-
     get_findings_response: dict = {}
     findings_results: dict = {}
 
@@ -528,9 +526,9 @@ def get_findings(
                 if j in findings_by_control_by_severity_failed[i]:
                     if i in findings_by_control_by_severity_failed:
                         if j in findings_by_control_by_severity_passed[i]:
-                            findings_by_control_by_severity_failed[i][
-                                j
-                            ] += findings_by_control_by_severity_passed[i][j]
+                            findings_by_control_by_severity_failed[i][j] += (
+                                findings_by_control_by_severity_passed[i][j]
+                            )
                         failed_controls_to_remove.append(j)
 
     for i in failed_controls_to_remove:
@@ -585,7 +583,6 @@ def get_findings(
 
 
 def main():
-
     assert sys.version_info >= (3, 12)
 
     config_args = get_config_args()
@@ -681,8 +678,8 @@ def main():
             csv_row.append(s)
             csv_row.append(sechub_scores[s]["total_controls"])
             csv_row.append(sechub_scores[s]["passed_controls"])
-            csv_row.append(f'{sechub_scores[s]["sechub_score_by_controls"]}%')
-            csv_row.append(f'{sechub_scores[s]["sechub_score_by_controls_weighted"]}%')
+            csv_row.append(f"{sechub_scores[s]['sechub_score_by_controls']}%")
+            csv_row.append(f"{sechub_scores[s]['sechub_score_by_controls_weighted']}%")
             csv_row.append(
                 len(
                     sechub_scores[s]["findings_by_control_by_severity_failed"][
@@ -713,8 +710,8 @@ def main():
             )
             csv_row.append(sechub_scores[s]["total_findings"])
             csv_row.append(sechub_scores[s]["passed_findings"])
-            csv_row.append(f'{sechub_scores[s]["sechub_score_by_findings"]}%')
-            csv_row.append(f'{sechub_scores[s]["sechub_score_by_findings_weighted"]}%')
+            csv_row.append(f"{sechub_scores[s]['sechub_score_by_findings']}%")
+            csv_row.append(f"{sechub_scores[s]['sechub_score_by_findings_weighted']}%")
             csv_row.append(
                 sechub_scores[s]["findings_by_severity_failed"]["CRITICAL"]
                 if "CRITICAL" in sechub_scores[s]["findings_by_severity_failed"]
