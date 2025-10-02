@@ -4,8 +4,8 @@ import logging
 import sys
 from pathlib import Path
 
-import boto3
-import botocore
+from boto3 import Session
+from botocore import exceptions
 
 LOGGER = logging.getLogger("awswsf")
 
@@ -17,7 +17,7 @@ def format_json_string(json_string):
 
 def get_boto3_session(profile_name):
     if profile_name == "default":
-        session = boto3.session.Session()
+        session = Session()
 
     else:
         config = configparser.ConfigParser()
@@ -30,7 +30,7 @@ def get_boto3_session(profile_name):
                 aws_profiles.append(profile)
 
         if profile_name in aws_profiles:
-            session = boto3.session.Session(profile_name=profile_name)
+            session = Session(profile_name=profile_name)
         else:
             LOGGER.error(
                 f"Profile '{profile_name}' was not found",
@@ -38,20 +38,25 @@ def get_boto3_session(profile_name):
             sys.exit(1)
 
     try:
-        session = boto3.session.Session(profile_name=profile_name)
+        session = Session(profile_name=profile_name)
         sts_client = session.client("sts")
         sts_client.get_caller_identity()
 
         LOGGER.info(f"Profile '{profile_name}' is valid and active.")
 
-        return boto3.session.Session(profile_name=profile_name)
+        return Session(profile_name=profile_name)
 
-    except botocore.exceptions.SSOTokenLoadError:
+    except exceptions.SSOTokenLoadError:
         LOGGER.error(
             f"Profile '{profile_name}' could not be loaded.",
         )
         sys.exit(1)
-    except botocore.exceptions.ClientError as e:
+    except exceptions.TokenRetrievalError:
+        LOGGER.error(
+            f"Profile '{profile_name}' is expired and could not be refreshed.",
+        )
+        sys.exit(1)
+    except exceptions.ClientError as e:
         if "ExpiredToken" in str(e):
             LOGGER.error(
                 f"Profile '{profile_name}' is inactive or expired: {e}",
@@ -60,6 +65,6 @@ def get_boto3_session(profile_name):
 
         else:
             LOGGER.error(
-                f"An unexpected error occurred while checking session for profile '{profile_name}': {e}",
+                f"An unexpected error occurred while checking session for profile '{profile_name}': {e}",  # noqa: E501
             )
             sys.exit(1)
