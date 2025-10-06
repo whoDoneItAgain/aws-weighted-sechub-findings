@@ -50,15 +50,6 @@ class CliArgs:
             default="default",
             help="AWS Profile to use",
         )
-        standard.add_argument(
-            "-Se",
-            "--severities",
-            action="store",
-            nargs="+",
-            choices=["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"],
-            default=["CRITICAL", "HIGH", "MEDIUM", "LOW"],
-            help='Findings to Include. Available options are "CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL".',
-        )
 
         standard.add_argument(
             "-S",
@@ -138,7 +129,6 @@ class ConfigMixIn(CliArgs):
         return format_json_string(
             {
                 "profile": self.profile,
-                "severities": self.severities,
                 "standards": self.standards,
                 "weight_critical": self.weight_critical,
                 "weight_high": self.weight_high,
@@ -156,10 +146,6 @@ class ConfigMixIn(CliArgs):
     @property
     def profile(self):
         return self._get_argument_value("profile")
-
-    @property
-    def severities(self):
-        return self._get_argument_value("severities")
 
     @property
     def standards(self):

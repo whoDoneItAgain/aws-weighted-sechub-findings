@@ -25,8 +25,18 @@ class Runner:
             StandardsArn=STANDARDS_MAP[control]["arn"],
             MaxResults=100,
         )
+        control_standards.extend(response["SecurityControlDefinitions"])
 
-        LOGGER.info(response["SecurityControlDefinitions"])
+        while "NextToken" in response:
+            response = sechub_client.list_security_control_definitions(
+                StandardsArn=STANDARDS_MAP[control]["arn"],
+                MaxResults=100,
+                NextToken=response["NextToken"],
+            )
+            control_standards.extend(response["SecurityControlDefinitions"])
+
+        LOGGER.info(control_standards)
+        LOGGER.info(len(control_standards))
 
     def cli(self) -> None:
         configure_logging(self.config.debug, self.config.info)
