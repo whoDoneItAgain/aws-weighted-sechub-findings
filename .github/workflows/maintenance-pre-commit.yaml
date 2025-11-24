@@ -27,7 +27,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - id: create-pull-request
-        uses: peter-evans/create-pull-request@v7.0.8
+        uses: peter-evans/create-pull-request@v7.0.9
         with:
           commit-message: |
             Update Precommit Hook Versions
